@@ -1,0 +1,5 @@
+[variables]
+TZ="America/Bogota"
+DEFAULT_HOUR="09:00"
+RETRY_EVERY_MINUTES="60"
+MAX_RETRIES="24"
