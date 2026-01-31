@@ -21,38 +21,42 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 TZ = os.getenv("TZ", "America/Bogota").strip()
 DEFAULT_HOUR = os.getenv("DEFAULT_HOUR", "09:00").strip()
+
+# Cada cuánto reintenta si no respondes (minutos)
 RETRY_EVERY_MINUTES = int(os.getenv("RETRY_EVERY_MINUTES", "60"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "24"))
 
-DB_PATH = "reminders.db"
+# Recomendado en Railway con Volume montado en /app/data
+DB_PATH = os.getenv("DB_PATH", "/app/data/reminders.db").strip()
+
 LOCAL_TZ = ZoneInfo(TZ)
 
 
-# ================== DB ==================
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS reminders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      chat_id INTEGER NOT NULL,
-      task TEXT NOT NULL,
-      due_utc TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending',       -- pending|done|deleted
-      amount_cop INTEGER,                          -- opcional
-      category TEXT DEFAULT 'general',              -- general|pago
-      created_utc TEXT,
-      completed_utc TEXT,
-      retry_count INTEGER NOT NULL DEFAULT 0,
-      last_sent_utc TEXT
-    )
-    """)
-    return conn
+# ================== DB helpers ==================
+def _ensure_db_dir():
+    folder = os.path.dirname(DB_PATH)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
 
-def ensure_schema():
+
+def db_connect():
     _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
 
-    # ✅ 1) Asegura que la tabla exista SIEMPRE
+
+def ensure_schema():
+    """
+    Asegura que:
+    1) La tabla reminders exista
+    2) Si hay DB vieja, agrega columnas faltantes sin romper
+    """
+    _ensure_db_dir()
+    conn = db_connect()
+
+    # 1) Tabla base
     conn.execute("""
     CREATE TABLE IF NOT EXISTS reminders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -69,14 +73,13 @@ def ensure_schema():
     )
     """)
 
-    # ✅ 2) Ahora sí inspecciona columnas existentes
+    # 2) Migraciones (si faltan columnas en DB vieja)
     cur = conn.execute("PRAGMA table_info(reminders)")
     cols = {row[1] for row in cur.fetchall()}
 
     def add(col_sql: str):
         conn.execute(f"ALTER TABLE reminders ADD COLUMN {col_sql}")
 
-    # ✅ 3) Migra columnas si faltan (por compatibilidad con DB vieja)
     if "amount_cop" not in cols:
         add("amount_cop INTEGER")
     if "category" not in cols:
@@ -94,7 +97,7 @@ def ensure_schema():
     conn.close()
 
 
-
+# ================== Time helpers ==================
 def now_local():
     return datetime.now(LOCAL_TZ)
 
@@ -103,7 +106,7 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
-def utc_iso(dt: datetime):
+def utc_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -120,8 +123,9 @@ def pretty_money(n: int) -> str:
     return f"${s} COP"
 
 
+# ================== DB operations ==================
 def insert_reminder(chat_id: int, task: str, due_local: datetime, amount_cop: int | None, category: str):
-    conn = db()
+    conn = db_connect()
     created = utc_iso(utc_now())
     due_utc = utc_iso(due_local)
     cur = conn.execute(
@@ -136,8 +140,9 @@ def insert_reminder(chat_id: int, task: str, due_local: datetime, amount_cop: in
 
 
 def update_reminder_time(chat_id: int, rid: int, new_due_local: datetime):
-    conn = db()
+    conn = db_connect()
     due_utc = utc_iso(new_due_local)
+
     cur = conn.execute(
         "SELECT id FROM reminders WHERE chat_id=? AND id=? AND status!='deleted' LIMIT 1",
         (chat_id, rid)
@@ -147,7 +152,8 @@ def update_reminder_time(chat_id: int, rid: int, new_due_local: datetime):
         return None
 
     conn.execute(
-        "UPDATE reminders SET due_utc=?, status='pending', retry_count=0, last_sent_utc=NULL WHERE chat_id=? AND id=?",
+        "UPDATE reminders SET due_utc=?, status='pending', retry_count=0, last_sent_utc=NULL "
+        "WHERE chat_id=? AND id=?",
         (due_utc, chat_id, rid)
     )
     conn.commit()
@@ -156,7 +162,7 @@ def update_reminder_time(chat_id: int, rid: int, new_due_local: datetime):
 
 
 def fetch_reminders(chat_id: int, status: str | None = None, limit: int = 200):
-    conn = db()
+    conn = db_connect()
     if status:
         cur = conn.execute(
             "SELECT id, task, due_utc, status, amount_cop, category FROM reminders "
@@ -177,7 +183,8 @@ def fetch_reminders(chat_id: int, status: str | None = None, limit: int = 200):
 def fetch_range(chat_id: int, start_local: datetime, end_local: datetime, category: str | None = None):
     start_utc = utc_iso(start_local)
     end_utc = utc_iso(end_local)
-    conn = db()
+
+    conn = db_connect()
     if category:
         cur = conn.execute(
             "SELECT id, task, due_utc, status, amount_cop, category FROM reminders "
@@ -192,13 +199,15 @@ def fetch_range(chat_id: int, start_local: datetime, end_local: datetime, catego
             "ORDER BY due_utc ASC",
             (chat_id, start_utc, end_utc)
         )
+
     rows = cur.fetchall()
     conn.close()
     return rows
 
 
 def mark_done(chat_id: int, rid: int | None = None):
-    conn = db()
+    conn = db_connect()
+
     if rid is None:
         cur = conn.execute(
             "SELECT id, task FROM reminders WHERE chat_id=? AND status='pending' ORDER BY due_utc ASC LIMIT 1",
@@ -230,7 +239,7 @@ def mark_done(chat_id: int, rid: int | None = None):
 
 
 def delete_reminder(chat_id: int, rid: int):
-    conn = db()
+    conn = db_connect()
     cur = conn.execute(
         "SELECT id, task FROM reminders WHERE chat_id=? AND id=? AND status!='deleted' LIMIT 1",
         (chat_id, rid)
@@ -256,6 +265,7 @@ MONTHS_ES = {
     "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9,
     "octubre": 10, "noviembre": 11, "diciembre": 12
 }
+
 
 @dataclass
 class ParsedCreate:
@@ -504,7 +514,7 @@ def format_pay_sum(rows, label: str):
     return "\n".join(msg)
 
 
-# ================== Natural language features ==================
+# ================== Natural language commands ==================
 def parse_delete_request(text: str) -> list[int] | None:
     tl = text.strip().lower()
     if not re.match(r"^(borrar|borra|eliminar|elimina)\b", tl):
@@ -586,7 +596,7 @@ def reminder_keyboard(rid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(kb)
 
 
-# ================== Commands (slash) ==================
+# ================== Slash commands ==================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Bot SIN IA listo.\n\n"
@@ -724,7 +734,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(format_list(rows, "🗂️ Lista completa:"))
         return
 
-    # 0.4) lista de la quincena actual (incluye done/pending en el rango)
+    # 0.4) lista de la quincena actual
     if is_quincena_list_request(text):
         start, end, label = current_quincena_range()
         rows = fetch_range(chat_id, start, end, category=None)
@@ -841,7 +851,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== Scheduler ==================
 async def tick_job(context: ContextTypes.DEFAULT_TYPE):
-    conn = db()
+    conn = db_connect()
     cur = conn.execute(
         "SELECT id, chat_id, task, due_utc, retry_count, last_sent_utc "
         "FROM reminders WHERE status='pending'"
@@ -880,6 +890,7 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
             )
             conn.commit()
         except Exception:
+            # si Telegram falla, no rompemos el loop
             pass
 
     conn.close()
@@ -888,31 +899,26 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
 # ================== MAIN ==================
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("Falta BOT_TOKEN en el .env")
+        raise RuntimeError("Falta BOT_TOKEN en Railway Variables")
 
     ensure_schema()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Slash (opcionales)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("listall", listall_cmd))
     app.add_handler(CommandHandler("sumq", sumq_cmd))
 
-    # Botones inline
     app.add_handler(CallbackQueryHandler(on_callback))
-
-    # Texto normal
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    # Checker
+    # job cada 30s
     app.job_queue.run_repeating(tick_job, interval=30, first=5)
 
-    print("🤖 Bot SIN IA (todo integrado) corriendo... (CTRL+C para parar)")
+    print("🤖 Bot corriendo 24/7...")
     app.run_polling()
 
 
 if __name__ == "__main__":
     main()
-
