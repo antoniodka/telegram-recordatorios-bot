@@ -866,34 +866,30 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
 
 # ================== MAIN ==================
 def main():
-if not BOT_TOKEN:
-    print("DEBUG ENV =", dict(os.environ))
-    raise RuntimeError("Railway NO está pasando BOT_TOKEN")
+    if not BOT_TOKEN:
+        raise RuntimeError("Falta BOT_TOKEN en Railway Variables")
 
     ensure_schema()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Slash (opcionales)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("listall", listall_cmd))
     app.add_handler(CommandHandler("sumq", sumq_cmd))
 
-    # Botones inline
     app.add_handler(CallbackQueryHandler(on_callback))
-
-    # Texto normal
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    # Checker
     app.job_queue.run_repeating(tick_job, interval=30, first=5)
 
-    print("🤖 Bot SIN IA (todo integrado) corriendo... (CTRL+C para parar)")
+    print("🤖 Bot corriendo en Railway 24/7...")
     app.run_polling()
+
 
 
 if __name__ == "__main__":
     main()
+
 
 
