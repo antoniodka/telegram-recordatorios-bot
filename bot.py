@@ -48,15 +48,35 @@ def db():
     """)
     return conn
 
-
 def ensure_schema():
+    _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
+
+    # ✅ 1) Asegura que la tabla exista SIEMPRE
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      task TEXT NOT NULL,
+      due_utc TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',       -- pending|done|deleted
+      amount_cop INTEGER,                          -- opcional
+      category TEXT DEFAULT 'general',              -- general|pago
+      created_utc TEXT,
+      completed_utc TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_sent_utc TEXT
+    )
+    """)
+
+    # ✅ 2) Ahora sí inspecciona columnas existentes
     cur = conn.execute("PRAGMA table_info(reminders)")
     cols = {row[1] for row in cur.fetchall()}
 
     def add(col_sql: str):
         conn.execute(f"ALTER TABLE reminders ADD COLUMN {col_sql}")
 
+    # ✅ 3) Migra columnas si faltan (por compatibilidad con DB vieja)
     if "amount_cop" not in cols:
         add("amount_cop INTEGER")
     if "category" not in cols:
@@ -72,6 +92,7 @@ def ensure_schema():
 
     conn.commit()
     conn.close()
+
 
 
 def now_local():
@@ -894,3 +915,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
