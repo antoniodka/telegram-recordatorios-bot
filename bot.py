@@ -866,8 +866,9 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
 
 # ================== MAIN ==================
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("Falta BOT_TOKEN en el .env")
+if not BOT_TOKEN:
+    print("DEBUG ENV =", dict(os.environ))
+    raise RuntimeError("Railway NO está pasando BOT_TOKEN")
 
     ensure_schema()
 
@@ -894,4 +895,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
