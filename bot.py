@@ -24,7 +24,7 @@ DEFAULT_HOUR = os.getenv("DEFAULT_HOUR", "09:00").strip()
 RETRY_EVERY_MINUTES = int(os.getenv("RETRY_EVERY_MINUTES", "60"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "24"))
 
-DB_PATH = "reminders.db"
+DB_PATH = "/data/reminders.db"
 LOCAL_TZ = ZoneInfo(TZ)
 
 
@@ -894,3 +894,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
