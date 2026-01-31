@@ -24,21 +24,12 @@ DEFAULT_HOUR = os.getenv("DEFAULT_HOUR", "09:00").strip()
 RETRY_EVERY_MINUTES = int(os.getenv("RETRY_EVERY_MINUTES", "60"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "24"))
 
-# ✅ Railway (recomendado con Volume montado en /app/data)
-DB_PATH = os.getenv("DB_PATH", "/app/data/reminders.db")
-
+DB_PATH = "reminders.db"
 LOCAL_TZ = ZoneInfo(TZ)
 
 
 # ================== DB ==================
-def _ensure_db_dir():
-    folder = os.path.dirname(DB_PATH)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-
-
 def db():
-    _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
     CREATE TABLE IF NOT EXISTS reminders (
@@ -59,7 +50,6 @@ def db():
 
 
 def ensure_schema():
-    _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.execute("PRAGMA table_info(reminders)")
     cols = {row[1] for row in cur.fetchall()}
@@ -245,7 +235,6 @@ MONTHS_ES = {
     "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9,
     "octubre": 10, "noviembre": 11, "diciembre": 12
 }
-
 
 @dataclass
 class ParsedCreate:
@@ -460,7 +449,7 @@ def parse_quincena_query(text: str) -> tuple[datetime, datetime, str] | None:
             which = 1
 
     start, end = quincena_range(y, month, which)
-    label = f"{'primera' if which == 1 else 'segunda'} quincena de {month_name} {y}"
+    label = f"{'primera' if which==1 else 'segunda'} quincena de {month_name} {y}"
     return start, end, label
 
 
@@ -878,23 +867,28 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
 # ================== MAIN ==================
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("Falta BOT_TOKEN en Railway Variables")
+        raise RuntimeError("Falta BOT_TOKEN en el .env")
 
     ensure_schema()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Slash (opcionales)
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
     app.add_handler(CommandHandler("listall", listall_cmd))
     app.add_handler(CommandHandler("sumq", sumq_cmd))
 
+    # Botones inline
     app.add_handler(CallbackQueryHandler(on_callback))
+
+    # Texto normal
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
+    # Checker
     app.job_queue.run_repeating(tick_job, interval=30, first=5)
 
-    print("🤖 Bot corriendo en Railway 24/7...")
+    print("🤖 Bot SIN IA (todo integrado) corriendo... (CTRL+C para parar)")
     app.run_polling()
 
 
