@@ -2,12 +2,13 @@ import os
 import re
 import sqlite3
 import calendar
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import dateparser
 from dotenv import load_dotenv
-from zoneinfo import ZoneInfo
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -850,7 +851,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ================== Scheduler ==================
-async def tick_job(context: ContextTypes.DEFAULT_TYPE):
+async def tick_once(bot):
+    """
+    Ejecuta una pasada del scheduler. La separo para poder usar:
+    - JobQueue (context.bot)
+    - Fallback loop (app.bot)
+    """
     conn = db_connect()
     cur = conn.execute(
         "SELECT id, chat_id, task, due_utc, retry_count, last_sent_utc "
@@ -879,7 +885,7 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
                 continue
 
         try:
-            await context.bot.send_message(
+            await bot.send_message(
                 chat_id=chat_id,
                 text=f"⏰ Recordatorio:\n{task}\n\n¿Qué hiciste?",
                 reply_markup=reminder_keyboard(rid)
@@ -896,6 +902,29 @@ async def tick_job(context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
 
+async def tick_job(context: ContextTypes.DEFAULT_TYPE):
+    # Para JobQueue (PTB)
+    await tick_once(context.bot)
+
+
+async def fallback_scheduler(app: Application, interval: int = 30, first: int = 5):
+    # Para cuando NO hay JobQueue
+    await asyncio.sleep(first)
+    while True:
+        await tick_once(app.bot)
+        await asyncio.sleep(interval)
+
+
+async def post_init(app: Application):
+    """
+    Se ejecuta al iniciar la app. Aquí lanzamos el scheduler fallback
+    solo si no hay JobQueue.
+    """
+    if app.job_queue is None:
+        print("⚠️ JobQueue no disponible. Usando fallback scheduler async.")
+        app.create_task(fallback_scheduler(app, interval=30, first=5))
+
+
 # ================== MAIN ==================
 def main():
     if not BOT_TOKEN:
@@ -903,7 +932,8 @@ def main():
 
     ensure_schema()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # OJO: ponemos post_init para arrancar fallback si no hay JobQueue
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("list", list_cmd))
@@ -913,8 +943,9 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
-    # job cada 30s
-    app.job_queue.run_repeating(tick_job, interval=30, first=5)
+    # Si JobQueue existe, úsalo; si no, post_init arranca fallback_scheduler
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(tick_job, interval=30, first=5)
 
     print("🤖 Bot corriendo 24/7...")
     app.run_polling()
